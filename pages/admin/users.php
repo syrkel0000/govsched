@@ -76,6 +76,11 @@ $users = $pdo->query("
                             <p>Users</p>
                         </a>
                     </li>
+                    <li class="nav-item">
+    <a href="account.php" class="nav-link">
+        <i class="nav-icon fas fa-user-cog"></i><p>Account</p>
+    </a>
+</li>
                 </ul>
             </nav>
         </div>
