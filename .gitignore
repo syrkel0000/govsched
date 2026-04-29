@@ -1,0 +1,4 @@
+/assets/plugins/
+/assets/dist/
+*.log
+.env
