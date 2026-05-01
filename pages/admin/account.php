@@ -121,6 +121,18 @@ $admins = $pdo->query("SELECT id, full_name, email, created_at FROM users WHERE 
                         </a>
                     </li>
                     <li class="nav-item">
+    <a href="slots.php" class="nav-link">
+        <i class="nav-icon fas fa-clock"></i><p>Slot Management</p>
+    </a>
+</li>
+
+<li class="nav-item">
+    <a href="documents.php" class="nav-link">
+        <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
+    </a>
+</li>
+
+                    <li class="nav-item">
                         <a href="account.php" class="nav-link active">
                             <i class="nav-icon fas fa-user-cog"></i><p>Account</p>
                         </a>

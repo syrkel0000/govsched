@@ -71,6 +71,11 @@ if (!$appt) {
                             <p>My Appointments</p>
                         </a>
                     </li>
+                    <li class="nav-item">
+    <a href="profile.php" class="nav-link">
+        <i class="nav-icon fas fa-user"></i><p>My Profile</p>
+    </a>
+</li>
                 </ul>
             </nav>
         </div>

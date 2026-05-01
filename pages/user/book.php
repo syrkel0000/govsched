@@ -3,25 +3,30 @@ require_once '../../includes/auth.php';
 require_once '../../includes/db.php';
 requireApplicant();
 
+// Fetch logged-in user data
+$user = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+$user->execute([$_SESSION['user_id']]);
+$user = $user->fetch();
+
 $documents = $pdo->query("SELECT * FROM documents")->fetchAll();
 $offices = ['Cabanatuan City', 'Palayan City'];
 
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $document_id    = $_POST['document_id'];
+    $document_id      = $_POST['document_id'];
     $appointment_date = $_POST['appointment_date'];
-    $slot_id        = $_POST['slot_id'];
-    $office         = $_POST['office'];
-    $request_type   = $_POST['request_type'];
-    $full_name      = trim($_POST['full_name']);
-    $age            = intval($_POST['age']);
-    $birthdate      = $_POST['birthdate'];
-    $address        = trim($_POST['address']);
-    $email          = trim($_POST['email']);
-    $contact        = trim($_POST['contact']);
-    $civil_status   = $_POST['civil_status'];
-    $gender         = $_POST['gender'];
+    $slot_id          = $_POST['slot_id'];
+    $office           = $_POST['office'];
+    $request_type     = $_POST['request_type'];
+    $full_name        = trim($_POST['full_name']);
+    $age              = intval($_POST['age']);
+    $birthdate        = $_POST['birthdate'];
+    $address          = trim($_POST['address']);
+    $email            = trim($_POST['email']);
+    $contact          = trim($_POST['contact']);
+    $civil_status     = $_POST['civil_status'];
+    $gender           = $_POST['gender'];
 
     $for_name = $for_relationship = $guardian_name = $guardian_contact = null;
     $is_minor = 0;
@@ -37,18 +42,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Validate: future date only
+    // Validate future date
     if (strtotime($appointment_date) <= strtotime('today')) {
         $error = 'Please select a future date.';
     }
 
-    // Validate: no weekends
+    // Validate no weekends
     $day_of_week = date('N', strtotime($appointment_date));
     if (!$error && $day_of_week >= 6) {
         $error = 'Offices are closed on weekends. Please select a weekday.';
     }
 
-    // Validate: office matches slot
+    // Validate slot belongs to selected office
     if (!$error) {
         $slot_check = $pdo->prepare("SELECT id FROM time_slots WHERE id = ? AND office = ?");
         $slot_check->execute([$slot_id, $office]);
@@ -57,24 +62,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Check slot capacity (max 20, excluding cancelled)
+    // Check slot capacity
     if (!$error) {
         $count_stmt = $pdo->prepare("
-            SELECT COUNT(*) FROM appointments 
+            SELECT COUNT(*) FROM appointments
             WHERE slot_id = ? AND appointment_date = ? AND office = ? AND status != 'cancelled'
         ");
         $count_stmt->execute([$slot_id, $appointment_date, $office]);
-        $booked = $count_stmt->fetchColumn();
-
-        if ($booked >= 20) {
+        if ($count_stmt->fetchColumn() >= 20) {
             $error = 'This time slot is already full. Please choose another.';
+        }
+    }
+
+    // Check if user already has a pending/confirmed appointment
+    if (!$error) {
+        $existing = $pdo->prepare("
+            SELECT id FROM appointments
+            WHERE user_id = ? AND status IN ('pending', 'confirmed')
+        ");
+        $existing->execute([$_SESSION['user_id']]);
+        if ($existing->fetch()) {
+            $error = 'You already have an active appointment. Please cancel it before booking a new one.';
         }
     }
 
     if (!$error) {
         $reference_no = 'GS-' . strtoupper(uniqid());
         $stmt = $pdo->prepare("
-            INSERT INTO appointments 
+            INSERT INTO appointments
             (user_id, document_id, slot_id, office, appointment_date, request_type,
              full_name, age, birthdate, address, email, contact, civil_status, gender,
              for_name, for_relationship, is_minor, guardian_name, guardian_contact, reference_no)
@@ -101,6 +116,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>GovSched | Book Appointment</title>
     <link rel="stylesheet" href="../../assets/plugins/fontawesome-free/css/all.min.css">
     <link rel="stylesheet" href="../../assets/dist/css/adminlte.min.css">
+    <style>
+        .slot-badge { font-size: 0.75rem; }
+        .field-locked { background-color: #f4f6f9 !important; cursor: not-allowed; }
+    </style>
 </head>
 <body class="hold-transition sidebar-mini">
 <div class="wrapper">
@@ -112,6 +131,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </li>
         </ul>
         <ul class="navbar-nav ml-auto">
+            <li class="nav-item">
+                <span class="nav-link">Welcome, <?= htmlspecialchars($_SESSION['full_name']) ?></span>
+            </li>
             <li class="nav-item">
                 <a class="nav-link" href="/govsched/includes/logout.php">
                     <i class="fas fa-sign-out-alt"></i> Logout
@@ -142,6 +164,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <i class="nav-icon fas fa-list"></i><p>My Appointments</p>
                         </a>
                     </li>
+                    <li class="nav-item">
+    <a href="profile.php" class="nav-link">
+        <i class="nav-icon fas fa-user"></i><p>My Profile</p>
+    </a>
+</li>
                 </ul>
             </nav>
         </div>
@@ -157,19 +184,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="container-fluid">
 
                 <?php if ($error): ?>
-                    <div class="alert alert-danger"><?= htmlspecialchars($error) ?></div>
+                    <div class="alert alert-danger alert-dismissible">
+                        <button type="button" class="close" data-dismiss="alert">&times;</button>
+                        <i class="fas fa-exclamation-circle"></i> <?= htmlspecialchars($error) ?>
+                    </div>
                 <?php endif; ?>
 
                 <form action="book.php" method="POST">
                 <div class="row">
 
+                    <!-- LEFT: Document & Schedule -->
                     <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header"><h3 class="card-title">Document & Schedule</h3></div>
+                        <div class="card card-primary card-outline">
+                            <div class="card-header">
+                                <h3 class="card-title"><i class="fas fa-calendar-alt mr-1"></i> Document & Schedule</h3>
+                            </div>
                             <div class="card-body">
 
                                 <div class="form-group">
-                                    <label>Office</label>
+                                    <label>Office <span class="text-danger">*</span></label>
                                     <select name="office" id="office" class="form-control" required>
                                         <option value="">-- Select Office --</option>
                                         <?php foreach ($offices as $o): ?>
@@ -179,7 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
 
                                 <div class="form-group">
-                                    <label>Document Type</label>
+                                    <label>Document Type <span class="text-danger">*</span></label>
                                     <select name="document_id" class="form-control" required>
                                         <option value="">-- Select Document --</option>
                                         <?php foreach ($documents as $doc): ?>
@@ -189,14 +222,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
 
                                 <div class="form-group">
-                                    <label>Appointment Date <small class="text-muted">(Mon–Fri only)</small></label>
+                                    <label>Appointment Date <span class="text-danger">*</span> <small class="text-muted">(Mon–Fri only)</small></label>
                                     <input type="date" name="appointment_date" id="appointment_date"
                                            class="form-control"
                                            min="<?= date('Y-m-d', strtotime('+1 day')) ?>" required>
                                 </div>
 
                                 <div class="form-group">
-                                    <label>Time Slot</label>
+                                    <label>Time Slot <span class="text-danger">*</span></label>
                                     <select name="slot_id" id="slot_id" class="form-control" required>
                                         <option value="">-- Select office and date first --</option>
                                     </select>
@@ -204,7 +237,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
 
                                 <div class="form-group">
-                                    <label>Request Type</label>
+                                    <label>Request Type <span class="text-danger">*</span></label>
                                     <select name="request_type" id="request_type" class="form-control" required>
                                         <option value="self">For Myself</option>
                                         <option value="other">For Another Person</option>
@@ -215,36 +248,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                     </div>
 
+                    <!-- RIGHT: Personal Info -->
                     <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header"><h3 class="card-title">Your Information</h3></div>
+                        <div class="card card-primary card-outline">
+                            <div class="card-header">
+                                <h3 class="card-title"><i class="fas fa-user mr-1"></i> Your Information</h3>
+                            </div>
                             <div class="card-body">
+
                                 <div class="form-group">
-                                    <label>Full Name</label>
-                                    <input type="text" name="full_name" class="form-control" required>
+                                    <label>Full Name <span class="text-danger">*</span></label>
+                                    <input type="text" name="full_name" id="full_name"
+                                           class="form-control"
+                                           value="<?= htmlspecialchars($user['full_name']) ?>"
+                                           required>
+                                    <small id="fullname_note" class="text-info">
+                                        <i class="fas fa-info-circle"></i> Auto-filled from your account.
+                                    </small>
                                 </div>
+
+                                <div class="form-group">
+                                    <label>Birthdate <span class="text-danger">*</span></label>
+                                    <input type="date" name="birthdate" id="birthdate"
+                                           class="form-control"
+                                           max="<?= date('Y-m-d') ?>" required>
+                                    <small class="text-muted">Age will be calculated automatically.</small>
+                                </div>
+
                                 <div class="form-group">
                                     <label>Age</label>
-                                    <input type="number" name="age" class="form-control" required>
+                                    <input type="number" name="age" id="age"
+                                           class="form-control field-locked"
+                                           placeholder="Auto-calculated" readonly>
                                 </div>
+
                                 <div class="form-group">
-                                    <label>Birthdate</label>
-                                    <input type="date" name="birthdate" class="form-control" required>
-                                </div>
-                                <div class="form-group">
-                                    <label>Address</label>
+                                    <label>Address <span class="text-danger">*</span></label>
                                     <textarea name="address" class="form-control" rows="2" required></textarea>
                                 </div>
+
                                 <div class="form-group">
-                                    <label>Email</label>
-                                    <input type="email" name="email" class="form-control" required>
+                                    <label>Email <span class="text-danger">*</span></label>
+                                    <input type="email" name="email" id="email"
+                                           class="form-control"
+                                           value="<?= htmlspecialchars($user['email']) ?>"
+                                           required>
+                                    <small id="email_note" class="text-info">
+                                        <i class="fas fa-info-circle"></i> Auto-filled from your account.
+                                    </small>
                                 </div>
+
                                 <div class="form-group">
-                                    <label>Contact Number</label>
-                                    <input type="text" name="contact" class="form-control" required>
+                                    <label>Contact Number <span class="text-danger">*</span></label>
+                                    <input type="text" name="contact" class="form-control"
+                                           placeholder="09XXXXXXXXX" maxlength="11" required>
                                 </div>
+
                                 <div class="form-group">
-                                    <label>Civil Status</label>
+                                    <label>Civil Status <span class="text-danger">*</span></label>
                                     <select name="civil_status" class="form-control" required>
                                         <option value="">-- Select --</option>
                                         <option>Single</option>
@@ -253,21 +314,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         <option>Separated</option>
                                     </select>
                                 </div>
+
                                 <div class="form-group">
-                                    <label>Gender</label>
+                                    <label>Gender <span class="text-danger">*</span></label>
                                     <select name="gender" class="form-control" required>
                                         <option value="">-- Select --</option>
                                         <option>Male</option>
                                         <option>Female</option>
                                     </select>
                                 </div>
+
                             </div>
                         </div>
                     </div>
 
+                    <!-- For Another Person -->
                     <div class="col-12" id="other_section" style="display:none;">
-                        <div class="card">
-                            <div class="card-header"><h3 class="card-title">Person Being Requested For</h3></div>
+                        <div class="card card-warning card-outline">
+                            <div class="card-header">
+                                <h3 class="card-title"><i class="fas fa-user-friends mr-1"></i> Person Being Requested For</h3>
+                            </div>
                             <div class="card-body row">
                                 <div class="col-md-4 form-group">
                                     <label>Full Name</label>
@@ -275,19 +341,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
                                 <div class="col-md-4 form-group">
                                     <label>Relationship</label>
-                                    <input type="text" name="for_relationship" class="form-control">
+                                    <input type="text" name="for_relationship" class="form-control"
+                                           placeholder="e.g. Son, Mother">
                                 </div>
                                 <div class="col-md-4 form-group">
                                     <label>Age</label>
-                                    <input type="number" name="for_age" id="for_age" class="form-control">
+                                    <input type="number" name="for_age" id="for_age"
+                                           class="form-control" min="0" max="120">
                                 </div>
                             </div>
                         </div>
                     </div>
 
+                    <!-- Guardian Info -->
                     <div class="col-12" id="guardian_section" style="display:none;">
-                        <div class="card">
-                            <div class="card-header bg-warning"><h3 class="card-title">Guardian Information (Minor)</h3></div>
+                        <div class="card card-danger card-outline">
+                            <div class="card-header bg-warning">
+                                <h3 class="card-title"><i class="fas fa-shield-alt mr-1"></i> Guardian Information (Minor)</h3>
+                            </div>
                             <div class="card-body row">
                                 <div class="col-md-6 form-group">
                                     <label>Guardian Name</label>
@@ -295,16 +366,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 </div>
                                 <div class="col-md-6 form-group">
                                     <label>Guardian Contact</label>
-                                    <input type="text" name="guardian_contact" class="form-control">
+                                    <input type="text" name="guardian_contact" class="form-control"
+                                           placeholder="09XXXXXXXXX">
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="col-12">
+                    <div class="col-12 mb-4">
                         <button type="submit" class="btn btn-primary btn-lg">
                             <i class="fas fa-calendar-check"></i> Submit Appointment
                         </button>
+                        <a href="dashboard.php" class="btn btn-secondary btn-lg ml-2">
+                            <i class="fas fa-times"></i> Cancel
+                        </a>
                     </div>
 
                 </div>
@@ -322,6 +397,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="../../assets/dist/js/adminlte.min.js"></script>
 <script>
+// Auto-calculate age from birthdate
+$('#birthdate').on('change', function() {
+    var birthdate = new Date($(this).val());
+    var today = new Date();
+    var age = today.getFullYear() - birthdate.getFullYear();
+    var m = today.getMonth() - birthdate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthdate.getDate())) age--;
+    $('#age').val(age > 0 ? age : '');
+});
+
+// Request type toggle — autofill or clear for myself/other
+$('#request_type').on('change', function() {
+    if ($(this).val() === 'other') {
+        $('#other_section').show();
+        $('#guardian_section').hide();
+        // Clear autofill when booking for others
+        $('#full_name').val('').removeClass('field-locked').prop('readonly', false);
+        $('#email').val('').removeClass('field-locked').prop('readonly', false);
+        $('#fullname_note, #email_note').hide();
+    } else {
+        $('#other_section').hide();
+        $('#guardian_section').hide();
+        // Restore autofill for myself
+        $('#full_name').val('<?= addslashes($user['full_name']) ?>').addClass('field-locked').prop('readonly', true);
+        $('#email').val('<?= addslashes($user['email']) ?>').addClass('field-locked').prop('readonly', true);
+        $('#fullname_note, #email_note').show();
+    }
+});
+
+// Lock autofill fields on load for "myself"
+$(document).ready(function() {
+    $('#full_name, #email').addClass('field-locked').prop('readonly', true);
+});
+
+// Load slots
 function loadSlots() {
     var date   = $('#appointment_date').val();
     var office = $('#office').val();
@@ -352,11 +462,10 @@ function loadSlots() {
     });
 }
 
-// Block weekends on date input
+// Block weekends on date picker
 $('#appointment_date').on('change', function() {
     var d = new Date($(this).val() + 'T00:00:00');
-    var day = d.getDay(); // 0=Sun, 6=Sat
-    if (day === 0 || day === 6) {
+    if (d.getDay() === 0 || d.getDay() === 6) {
         alert('Offices are closed on weekends. Please select a weekday.');
         $(this).val('');
         $('#slot_id').html('<option value="">-- Select office and date first --</option>');
@@ -367,13 +476,9 @@ $('#appointment_date').on('change', function() {
 
 $('#office').on('change', loadSlots);
 
-$('#request_type').change(function() {
-    $('#other_section').toggle($(this).val() === 'other');
-    if ($(this).val() !== 'other') $('#guardian_section').hide();
-});
-
+// Minor guardian toggle
 $('#for_age').on('input', function() {
-    $('#guardian_section').toggle(parseInt($(this).val()) < 18);
+    $('#guardian_section').toggle(parseInt($(this).val()) < 18 && $(this).val() !== '');
 });
 </script>
 </body>

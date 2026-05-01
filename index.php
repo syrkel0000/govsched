@@ -66,12 +66,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="input-group-text"><span class="fas fa-envelope"></span></div>
                     </div>
                 </div>
-                <div class="input-group mb-3">
-                    <input type="password" name="password" class="form-control" placeholder="Password" required>
-                    <div class="input-group-append">
-                        <div class="input-group-text"><span class="fas fa-lock"></span></div>
-                    </div>
-                </div>
+               <div class="input-group mb-3">
+    <input type="password" name="password" id="password" class="form-control" placeholder="Password" required>
+    <div class="input-group-append">
+        <div class="input-group-text" id="toggle_password" style="cursor:pointer;">
+            <span class="fas fa-eye" id="eye_icon"></span>
+        </div>
+    </div>
+</div>
                 <div class="row">
                     <div class="col-12">
                         <button type="submit" class="btn btn-primary btn-block">Sign In</button>
@@ -88,5 +90,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <script src="assets/plugins/jquery/jquery.min.js"></script>
 <script src="assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="assets/dist/js/adminlte.min.js"></script>
+<script>
+$('#toggle_password').on('click', function() {
+    var $input = $('#password');
+    var $icon  = $('#eye_icon');
+    if ($input.attr('type') === 'password') {
+        $input.attr('type', 'text');
+        $icon.removeClass('fa-eye').addClass('fa-eye-slash');
+    } else {
+        $input.attr('type', 'password');
+        $icon.removeClass('fa-eye-slash').addClass('fa-eye');
+    }
+});
+</script>
 </body>
 </html>
