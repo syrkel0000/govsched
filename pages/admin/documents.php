@@ -5,18 +5,21 @@ requireAdmin();
 
 $error = '';
 
+$agencies = ['PSA', 'LTO', 'SSS', 'Pag-IBIG', 'PhilHealth', 'PhilSys'];
+
 // Add document
 if (isset($_POST['add_document'])) {
-    $name = trim($_POST['name']);
-    if (empty($name)) {
-        $error = 'Document name is required.';
+    $name   = trim($_POST['name']);
+    $agency = trim($_POST['agency']);
+    if (empty($name) || empty($agency)) {
+        $error = 'All fields are required.';
     } else {
-        $exists = $pdo->prepare("SELECT id FROM documents WHERE name = ?");
-        $exists->execute([$name]);
+        $exists = $pdo->prepare("SELECT id FROM documents WHERE name = ? AND agency = ?");
+        $exists->execute([$name, $agency]);
         if ($exists->fetch()) {
-            $error = 'That document already exists.';
+            $error = 'That document already exists under this agency.';
         } else {
-            $pdo->prepare("INSERT INTO documents (name) VALUES (?)")->execute([$name]);
+            $pdo->prepare("INSERT INTO documents (name, agency) VALUES (?, ?)")->execute([$name, $agency]);
             header('Location: documents.php?msg=added');
             exit();
         }
@@ -25,18 +28,18 @@ if (isset($_POST['add_document'])) {
 
 // Update document
 if (isset($_POST['update_document'])) {
-    $doc_id = intval($_POST['doc_id']);
+    $doc_id = (int)$_POST['doc_id'];
     $name   = trim($_POST['name']);
-    if (empty($name)) {
-        $error = 'Document name is required.';
+    $agency = trim($_POST['agency']);
+    if (empty($name) || empty($agency)) {
+        $error = 'All fields are required.';
     } else {
-        // Check duplicate excluding self
-        $exists = $pdo->prepare("SELECT id FROM documents WHERE name = ? AND id != ?");
-        $exists->execute([$name, $doc_id]);
+        $exists = $pdo->prepare("SELECT id FROM documents WHERE name = ? AND agency = ? AND id != ?");
+        $exists->execute([$name, $agency, $doc_id]);
         if ($exists->fetch()) {
-            $error = 'That document name already exists.';
+            $error = 'That document already exists under this agency.';
         } else {
-            $pdo->prepare("UPDATE documents SET name = ? WHERE id = ?")->execute([$name, $doc_id]);
+            $pdo->prepare("UPDATE documents SET name = ?, agency = ? WHERE id = ?")->execute([$name, $agency, $doc_id]);
             header('Location: documents.php?msg=updated');
             exit();
         }
@@ -45,13 +48,8 @@ if (isset($_POST['update_document'])) {
 
 // Delete document
 if (isset($_GET['delete'])) {
-    $del_id = intval($_GET['delete']);
-
-    // Block if document has active appointments
-    $active = $pdo->prepare("
-        SELECT COUNT(*) FROM appointments
-        WHERE document_id = ? AND status IN ('pending','confirmed')
-    ");
+    $del_id = (int)$_GET['delete'];
+    $active = $pdo->prepare("SELECT COUNT(*) FROM appointments WHERE document_id = ? AND status IN ('pending','confirmed')");
     $active->execute([$del_id]);
     if ($active->fetchColumn() > 0) {
         $error = 'Cannot delete — this document has active appointments.';
@@ -63,12 +61,18 @@ if (isset($_GET['delete'])) {
 }
 
 $documents = $pdo->query("
-    SELECT d.*, COUNT(a.id) as total_appointments
+    SELECT d.*, COUNT(a.id) AS total_appointments
     FROM documents d
     LEFT JOIN appointments a ON a.document_id = d.id
     GROUP BY d.id
-    ORDER BY d.name ASC
+    ORDER BY d.agency ASC, d.name ASC
 ")->fetchAll();
+
+// Group by agency
+$grouped = [];
+foreach ($documents as $doc) {
+    $grouped[$doc['agency']][] = $doc;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -148,17 +152,9 @@ $documents = $pdo->query("
         <div class="content">
             <div class="container-fluid">
 
-                <!-- Flash Messages -->
                 <?php if (isset($_GET['msg'])): ?>
-                <?php
-                $msgs = [
-                    'added'   => ['success', 'Document added successfully.'],
-                    'updated' => ['success', 'Document updated successfully.'],
-                    'deleted' => ['warning', 'Document deleted.'],
-                ];
-                if (isset($msgs[$_GET['msg']])):
-                    [$type, $text] = $msgs[$_GET['msg']];
-                ?>
+                <?php $msgs = ['added'=>['success','Document added.'],'updated'=>['success','Document updated.'],'deleted'=>['warning','Document deleted.']]; ?>
+                <?php if (isset($msgs[$_GET['msg']])): [$type,$text] = $msgs[$_GET['msg']]; ?>
                 <div class="alert alert-<?= $type ?> alert-dismissible">
                     <button type="button" class="close" data-dismiss="alert">&times;</button>
                     <?= $text ?>
@@ -183,9 +179,18 @@ $documents = $pdo->query("
                             <div class="card-body">
                                 <form method="POST" action="documents.php">
                                     <div class="form-group">
+                                        <label>Agency <span class="text-danger">*</span></label>
+                                        <select name="agency" class="form-control" required>
+                                            <option value="">-- Select Agency --</option>
+                                            <?php foreach ($agencies as $ag): ?>
+                                                <option value="<?= $ag ?>"><?= $ag ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
                                         <label>Document Name <span class="text-danger">*</span></label>
                                         <input type="text" name="name" class="form-control"
-                                               placeholder="e.g. Voter's ID" required>
+                                               placeholder="e.g. Birth Certificate" required>
                                     </div>
                                     <button type="submit" name="add_document" class="btn btn-primary btn-block">
                                         <i class="fas fa-plus"></i> Add Document
@@ -195,13 +200,22 @@ $documents = $pdo->query("
                         </div>
                     </div>
 
-                    <!-- Documents Table -->
+                    <!-- Documents Table grouped by agency -->
                     <div class="col-md-8">
+
+                        <?php if (empty($documents)): ?>
+                        <div class="card">
+                            <div class="card-body text-center text-muted py-4">No documents yet.</div>
+                        </div>
+                        <?php endif; ?>
+
+                        <?php foreach ($agencies as $agency):
+                            if (empty($grouped[$agency])) continue; ?>
                         <div class="card">
                             <div class="card-header">
                                 <h3 class="card-title">
-                                    <i class="fas fa-file-alt mr-1"></i> All Documents
-                                    <span class="badge badge-primary ml-2"><?= count($documents) ?></span>
+                                    <i class="fas fa-building mr-1"></i> <?= $agency ?>
+                                    <span class="badge badge-primary ml-2"><?= count($grouped[$agency]) ?></span>
                                 </h3>
                             </div>
                             <div class="card-body table-responsive p-0">
@@ -210,39 +224,42 @@ $documents = $pdo->query("
                                         <tr>
                                             <th>#</th>
                                             <th>Document Name</th>
-                                            <th>Total Appointments</th>
+                                            <th>Appointments</th>
                                             <th>Edit</th>
-                                            <th>Action</th>
+                                            <th>Delete</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <?php foreach ($documents as $i => $doc): ?>
+                                        <?php foreach ($grouped[$agency] as $i => $doc): ?>
                                         <tr>
                                             <td><?= $i + 1 ?></td>
                                             <td id="name_display_<?= $doc['id'] ?>">
                                                 <?= htmlspecialchars($doc['name']) ?>
                                             </td>
                                             <td>
-                                                <span class="badge badge-info">
-                                                    <?= $doc['total_appointments'] ?>
-                                                </span>
+                                                <span class="badge badge-info"><?= $doc['total_appointments'] ?></span>
                                             </td>
                                             <td>
-                                                <!-- Inline edit form -->
                                                 <form method="POST" action="documents.php"
                                                       class="form-inline" id="edit_form_<?= $doc['id'] ?>"
                                                       style="display:none;">
                                                     <input type="hidden" name="doc_id" value="<?= $doc['id'] ?>">
+                                                    <select name="agency" class="form-control form-control-sm mr-1" required>
+                                                        <?php foreach ($agencies as $ag): ?>
+                                                            <option value="<?= $ag ?>" <?= $doc['agency'] === $ag ? 'selected' : '' ?>>
+                                                                <?= $ag ?>
+                                                            </option>
+                                                        <?php endforeach; ?>
+                                                    </select>
                                                     <input type="text" name="name"
-                                                           class="form-control form-control-sm mr-2"
+                                                           class="form-control form-control-sm mr-1"
                                                            value="<?= htmlspecialchars($doc['name']) ?>"
-                                                           style="width:180px;" required>
+                                                           style="width:150px;" required>
                                                     <button type="submit" name="update_document"
                                                             class="btn btn-success btn-sm mr-1">
                                                         <i class="fas fa-save"></i>
                                                     </button>
-                                                    <button type="button"
-                                                            class="btn btn-secondary btn-sm"
+                                                    <button type="button" class="btn btn-secondary btn-sm"
                                                             onclick="cancelEdit(<?= $doc['id'] ?>)">
                                                         <i class="fas fa-times"></i>
                                                     </button>
@@ -262,19 +279,13 @@ $documents = $pdo->query("
                                             </td>
                                         </tr>
                                         <?php endforeach; ?>
-                                        <?php if (empty($documents)): ?>
-                                        <tr>
-                                            <td colspan="5" class="text-center text-muted py-3">
-                                                No documents yet.
-                                            </td>
-                                        </tr>
-                                        <?php endif; ?>
                                     </tbody>
                                 </table>
                             </div>
                         </div>
-                    </div>
+                        <?php endforeach; ?>
 
+                    </div>
                 </div>
             </div>
         </div>
@@ -293,7 +304,6 @@ function showEdit(id) {
     $('#edit_btn_' + id).hide();
     $('#name_display_' + id).hide();
 }
-
 function cancelEdit(id) {
     $('#edit_form_' + id).hide();
     $('#edit_btn_' + id).show();

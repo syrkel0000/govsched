@@ -4,27 +4,25 @@ require_once '../../includes/db.php';
 requireAdmin();
 
 $error = '';
-$offices = ['Cabanatuan City', 'Palayan City'];
 
 // Add slot
 if (isset($_POST['add_slot'])) {
+    $branch_id    = (int)$_POST['branch_id'];
     $slot_time    = trim($_POST['slot_time']);
-    $office       = $_POST['office'];
-    $max_capacity = intval($_POST['max_capacity']);
+    $max_capacity = (int)$_POST['max_capacity'];
 
-    if (empty($slot_time) || empty($office)) {
+    if (!$branch_id || empty($slot_time)) {
         $error = 'All fields are required.';
     } elseif ($max_capacity < 1) {
         $error = 'Capacity must be at least 1.';
     } else {
-        // Check duplicate slot_time + office
-        $exists = $pdo->prepare("SELECT id FROM time_slots WHERE slot_time = ? AND office = ?");
-        $exists->execute([$slot_time, $office]);
+        $exists = $pdo->prepare("SELECT id FROM time_slots WHERE slot_time = ? AND branch_id = ?");
+        $exists->execute([$slot_time, $branch_id]);
         if ($exists->fetch()) {
-            $error = 'That time slot already exists for this office.';
+            $error = 'That time slot already exists for this branch.';
         } else {
-            $pdo->prepare("INSERT INTO time_slots (slot_time, office, max_capacity) VALUES (?, ?, ?)")
-                ->execute([$slot_time, $office, $max_capacity]);
+            $pdo->prepare("INSERT INTO time_slots (branch_id, slot_time, max_capacity) VALUES (?, ?, ?)")
+                ->execute([$branch_id, $slot_time, $max_capacity]);
             header('Location: slots.php?msg=added');
             exit();
         }
@@ -33,8 +31,8 @@ if (isset($_POST['add_slot'])) {
 
 // Update capacity
 if (isset($_POST['update_capacity'])) {
-    $slot_id      = intval($_POST['slot_id']);
-    $max_capacity = intval($_POST['max_capacity']);
+    $slot_id      = (int)$_POST['slot_id'];
+    $max_capacity = (int)$_POST['max_capacity'];
     if ($max_capacity < 1) {
         $error = 'Capacity must be at least 1.';
     } else {
@@ -47,13 +45,8 @@ if (isset($_POST['update_capacity'])) {
 
 // Delete slot
 if (isset($_GET['delete'])) {
-    $del_id = intval($_GET['delete']);
-
-    // Check if slot has active appointments
-    $active = $pdo->prepare("
-        SELECT COUNT(*) FROM appointments
-        WHERE slot_id = ? AND status IN ('pending','confirmed')
-    ");
+    $del_id = (int)$_GET['delete'];
+    $active = $pdo->prepare("SELECT COUNT(*) FROM appointments WHERE slot_id = ? AND status IN ('pending','confirmed')");
     $active->execute([$del_id]);
     if ($active->fetchColumn() > 0) {
         $error = 'Cannot delete — this slot has active appointments.';
@@ -64,21 +57,36 @@ if (isset($_GET['delete'])) {
     }
 }
 
-// Fetch slots grouped by office with booking count for today
-$slots = $pdo->query("
-    SELECT t.*,
-           COUNT(a.id) as total_booked
-    FROM time_slots t
-    LEFT JOIN appointments a ON a.slot_id = t.id AND a.status != 'cancelled'
-    GROUP BY t.id
-    ORDER BY t.office ASC, t.slot_time ASC
-")->fetchAll();
+// Fetch all branches
+$branches = $pdo->query("SELECT * FROM branches ORDER BY city, agency, name")->fetchAll();
 
-// Group by office
+// Filter by branch
+$filter_branch = isset($_GET['branch_id']) ? (int)$_GET['branch_id'] : 0;
+
+$query = "
+    SELECT ts.*, b.name AS branch_name, b.city, b.agency,
+           COUNT(a.id) AS total_booked
+    FROM time_slots ts
+    JOIN branches b ON b.id = ts.branch_id
+    LEFT JOIN appointments a ON a.slot_id = ts.id AND a.status != 'cancelled'
+";
+if ($filter_branch) {
+    $query .= " WHERE ts.branch_id = $filter_branch";
+}
+$query .= " GROUP BY ts.id ORDER BY b.city, b.agency, b.name, ts.slot_time";
+
+$slots = $pdo->query($query)->fetchAll();
+
+// Group by branch_id
 $grouped = [];
 foreach ($slots as $slot) {
-    $grouped[$slot['office']][] = $slot;
+    $grouped[$slot['branch_id']][] = $slot;
 }
+
+// Branches to display — all or filtered
+$display_branches = $filter_branch
+    ? array_filter($branches, fn($b) => $b['id'] === $filter_branch)
+    : $branches;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -134,13 +142,11 @@ foreach ($slots as $slot) {
                             <i class="nav-icon fas fa-clock"></i><p>Slot Management</p>
                         </a>
                     </li>
-
                     <li class="nav-item">
-    <a href="documents.php" class="nav-link">
-        <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
-    </a>
-</li>
-
+                        <a href="documents.php" class="nav-link">
+                            <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
+                        </a>
+                    </li>
                     <li class="nav-item">
                         <a href="account.php" class="nav-link">
                             <i class="nav-icon fas fa-user-cog"></i><p>Account</p>
@@ -160,17 +166,9 @@ foreach ($slots as $slot) {
         <div class="content">
             <div class="container-fluid">
 
-                <!-- Flash Messages -->
                 <?php if (isset($_GET['msg'])): ?>
-                <?php
-                $msgs = [
-                    'added'   => ['success', 'Time slot added successfully.'],
-                    'updated' => ['success', 'Capacity updated successfully.'],
-                    'deleted' => ['warning', 'Time slot deleted.'],
-                ];
-                if (isset($msgs[$_GET['msg']])):
-                    [$type, $text] = $msgs[$_GET['msg']];
-                ?>
+                <?php $msgs = ['added'=>['success','Time slot added.'],'updated'=>['success','Capacity updated.'],'deleted'=>['warning','Time slot deleted.']]; ?>
+                <?php if (isset($msgs[$_GET['msg']])): [$type,$text] = $msgs[$_GET['msg']]; ?>
                 <div class="alert alert-<?= $type ?> alert-dismissible">
                     <button type="button" class="close" data-dismiss="alert">&times;</button>
                     <?= $text ?>
@@ -184,6 +182,8 @@ foreach ($slots as $slot) {
                 </div>
                 <?php endif; ?>
 
+
+
                 <!-- Add Slot Form -->
                 <div class="card card-primary card-outline">
                     <div class="card-header">
@@ -192,18 +192,36 @@ foreach ($slots as $slot) {
                     <div class="card-body">
                         <form method="POST" action="slots.php" class="form-inline flex-wrap" style="gap:10px;">
                             <div class="form-group">
-                                <label class="mr-2">Office</label>
-                                <select name="office" class="form-control" required>
-                                    <option value="">-- Select Office --</option>
-                                    <?php foreach ($offices as $o): ?>
-                                    <option value="<?= $o ?>"><?= $o ?></option>
+                                <label class="mr-2">Branch</label>
+                                <select name="branch_id" class="form-control" required>
+                                    <option value="">-- Select Branch --</option>
+                                    <?php
+                                    $city = '';
+                                    foreach ($branches as $b):
+                                        if ($city !== $b['city']):
+                                            if ($city) echo '</optgroup>';
+                                            $city = $b['city'];
+                                            echo '<optgroup label="' . htmlspecialchars($city) . '">';
+                                        endif;
+                                    ?>
+                                        <option value="<?= $b['id'] ?>"><?= htmlspecialchars($b['name']) ?></option>
                                     <?php endforeach; ?>
+                                    <?php if ($city) echo '</optgroup>'; ?>
                                 </select>
                             </div>
                             <div class="form-group">
                                 <label class="mr-2">Time Slot</label>
-                                <input type="text" name="slot_time" class="form-control"
-                                       placeholder="e.g. 08:00 AM - 09:00 AM" style="width:220px;" required>
+                                <select name="slot_time" class="form-control" required>
+                                    <option value="">-- Select Time --</option>
+                                    <option>08:00 AM - 09:00 AM</option>
+                                    <option>09:00 AM - 10:00 AM</option>
+                                    <option>10:00 AM - 11:00 AM</option>
+                                    <option>11:00 AM - 12:00 PM</option>
+                                    <option>01:00 PM - 02:00 PM</option>
+                                    <option>02:00 PM - 03:00 PM</option>
+                                    <option>03:00 PM - 04:00 PM</option>
+                                    <option>04:00 PM - 05:00 PM</option>
+                                </select>
                             </div>
                             <div class="form-group">
                                 <label class="mr-2">Max Capacity</label>
@@ -217,14 +235,52 @@ foreach ($slots as $slot) {
                     </div>
                 </div>
 
-                <!-- Slots Table per Office -->
-                <?php foreach ($offices as $office): ?>
+                                <!-- Filter -->
+<div class="card card-outline card-secondary">
+    <div class="card-body py-2">
+        <form method="GET" action="slots.php" class="form-inline" style="gap:10px;">
+            <div class="form-group">
+                <label class="mr-2"><i class="fas fa-filter mr-1"></i>Filter by Branch</label>
+                <select name="branch_id" class="form-control">
+                    <option value="">-- All Branches --</option>
+                    <?php
+                    $city = '';
+                    foreach ($branches as $b):
+                        if ($city !== $b['city']):
+                            if ($city) echo '</optgroup>';
+                            $city = $b['city'];
+                            echo '<optgroup label="' . htmlspecialchars($city) . '">';
+                        endif;
+                    ?>
+                        <option value="<?= $b['id'] ?>" <?= $filter_branch === $b['id'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($b['name']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                    <?php if ($city) echo '</optgroup>'; ?>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">
+                <i class="fas fa-search"></i> Filter
+            </button>
+            <?php if ($filter_branch): ?>
+            <a href="slots.php" class="btn btn-secondary">
+                <i class="fas fa-times"></i> Clear
+            </a>
+            <?php endif; ?>
+        </form>
+    </div>
+</div>
+
+                <!-- Slots per Branch -->
+               <?php foreach ($display_branches as $b): ?>
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
-                            <i class="fas fa-building mr-1"></i> <?= $office ?> Office
+                            <i class="fas fa-building mr-1"></i>
+                            <?= htmlspecialchars($b['name']) ?>
+                            <small class="text-muted ml-1">(<?= htmlspecialchars($b['city']) ?>)</small>
                             <span class="badge badge-primary ml-2">
-                                <?= count($grouped[$office] ?? []) ?> slots
+                                <?= count($grouped[$b['id']] ?? []) ?> slots
                             </span>
                         </h3>
                     </div>
@@ -241,20 +297,16 @@ foreach ($slots as $slot) {
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php if (empty($grouped[$office])): ?>
+                                <?php if (empty($grouped[$b['id']])): ?>
                                 <tr>
-                                    <td colspan="6" class="text-center text-muted py-3">
-                                        No slots for this office.
-                                    </td>
+                                    <td colspan="6" class="text-center text-muted py-3">No slots for this branch.</td>
                                 </tr>
                                 <?php else: ?>
-                                <?php foreach ($grouped[$office] as $i => $slot): ?>
+                                <?php foreach ($grouped[$b['id']] as $i => $slot): ?>
                                 <tr>
                                     <td><?= $i + 1 ?></td>
                                     <td><strong><?= htmlspecialchars($slot['slot_time']) ?></strong></td>
-                                    <td>
-                                        <span class="badge badge-info"><?= $slot['max_capacity'] ?> max</span>
-                                    </td>
+                                    <td><span class="badge badge-info"><?= $slot['max_capacity'] ?> max</span></td>
                                     <td>
                                         <?php
                                         $pct = $slot['max_capacity'] > 0
@@ -265,8 +317,7 @@ foreach ($slots as $slot) {
                                         <div style="min-width:140px;">
                                             <?= $slot['total_booked'] ?> booked
                                             <div class="progress progress-sm mt-1">
-                                                <div class="progress-bar bg-<?= $bar ?>"
-                                                     style="width:<?= $pct ?>%"></div>
+                                                <div class="progress-bar bg-<?= $bar ?>" style="width:<?= $pct ?>%"></div>
                                             </div>
                                         </div>
                                     </td>
@@ -277,8 +328,7 @@ foreach ($slots as $slot) {
                                                    class="form-control form-control-sm mr-2"
                                                    value="<?= $slot['max_capacity'] ?>"
                                                    min="1" max="100" style="width:75px;" required>
-                                            <button type="submit" name="update_capacity"
-                                                    class="btn btn-sm btn-success">
+                                            <button type="submit" name="update_capacity" class="btn btn-sm btn-success">
                                                 <i class="fas fa-save"></i>
                                             </button>
                                         </form>

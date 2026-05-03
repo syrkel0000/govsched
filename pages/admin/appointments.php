@@ -5,51 +5,54 @@ requireAdmin();
 
 // Handle delete
 if (isset($_GET['delete'])) {
-    $del_id = intval($_GET['delete']);
-    $pdo->prepare("DELETE FROM appointments WHERE id = ?")->execute([$del_id]);
+    $pdo->prepare("DELETE FROM appointments WHERE id = ?")->execute([(int)$_GET['delete']]);
     header('Location: appointments.php?msg=deleted');
     exit();
 }
 
 // Handle status update
 if (isset($_POST['update_status'])) {
-    $upd_id = intval($_POST['appointment_id']);
-    $status = $_POST['status'];
-    $pdo->prepare("UPDATE appointments SET status = ? WHERE id = ?")->execute([$status, $upd_id]);
+    $pdo->prepare("UPDATE appointments SET status = ? WHERE id = ?")
+        ->execute([$_POST['status'], (int)$_POST['appointment_id']]);
     header('Location: appointments.php?msg=updated');
     exit();
 }
 
+// Fetch branches for filter
+$branches = $pdo->query("SELECT id, name, city FROM branches ORDER BY city, name")->fetchAll();
+
 // Filters
-$where = "WHERE 1=1";
+$where  = "WHERE 1=1";
 $params = [];
 
-if (!empty($_GET['office'])) {
-    $where .= " AND a.office = ?";
-    $params[] = $_GET['office'];
+if (!empty($_GET['branch_id'])) {
+    $where   .= " AND a.branch_id = ?";
+    $params[] = (int)$_GET['branch_id'];
 }
 if (!empty($_GET['status'])) {
-    $where .= " AND a.status = ?";
+    $where   .= " AND a.status = ?";
     $params[] = $_GET['status'];
 }
 if (!empty($_GET['date'])) {
-    $where .= " AND a.appointment_date = ?";
+    $where   .= " AND a.appointment_date = ?";
     $params[] = $_GET['date'];
 }
 if (!empty($_GET['search'])) {
-    $where .= " AND (a.reference_no LIKE ? OR u.full_name LIKE ? OR a.full_name LIKE ?)";
-    $q = '%' . $_GET['search'] . '%';
+    $where   .= " AND (a.reference_no LIKE ? OR u.full_name LIKE ? OR a.full_name LIKE ?)";
+    $q        = '%' . $_GET['search'] . '%';
     $params[] = $q;
     $params[] = $q;
     $params[] = $q;
 }
 
 $stmt = $pdo->prepare("
-    SELECT a.*, u.full_name as applicant_name, d.name as document_name, t.slot_time
+    SELECT a.*, u.full_name AS applicant_name, d.name AS document_name,
+           t.slot_time, b.name AS branch_name, b.city
     FROM appointments a
-    JOIN users u ON a.user_id = u.id
-    JOIN documents d ON a.document_id = d.id
-    JOIN time_slots t ON a.slot_id = t.id
+    JOIN users u       ON a.user_id     = u.id
+    JOIN documents d   ON a.document_id = d.id
+    JOIN time_slots t  ON a.slot_id     = t.id
+    JOIN branches b    ON a.branch_id   = b.id
     $where
     ORDER BY a.appointment_date ASC, t.slot_time ASC
 ");
@@ -106,23 +109,20 @@ $appointments = $stmt->fetchAll();
                         </a>
                     </li>
                     <li class="nav-item">
-    <a href="slots.php" class="nav-link">
-        <i class="nav-icon fas fa-clock"></i><p>Slot Management</p>
-    </a>
-</li>
-
-<li class="nav-item">
-    <a href="documents.php" class="nav-link">
-        <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
-    </a>
-</li>
-
-
+                        <a href="slots.php" class="nav-link">
+                            <i class="nav-icon fas fa-clock"></i><p>Slot Management</p>
+                        </a>
+                    </li>
                     <li class="nav-item">
-    <a href="account.php" class="nav-link">
-        <i class="nav-icon fas fa-user-cog"></i><p>Account</p>
-    </a>
-</li>
+                        <a href="documents.php" class="nav-link">
+                            <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="account.php" class="nav-link">
+                            <i class="nav-icon fas fa-user-cog"></i><p>Account</p>
+                        </a>
+                    </li>
                 </ul>
             </nav>
         </div>
@@ -137,7 +137,6 @@ $appointments = $stmt->fetchAll();
         <div class="content">
             <div class="container-fluid">
 
-                <!-- Flash Messages -->
                 <?php if (isset($_GET['msg'])): ?>
                     <?php if ($_GET['msg'] === 'updated'): ?>
                         <div class="alert alert-success alert-dismissible">
@@ -155,7 +154,7 @@ $appointments = $stmt->fetchAll();
                 <!-- Filters -->
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Filter & Search</h3>
+                        <h3 class="card-title"><i class="fas fa-filter mr-1"></i> Filter & Search</h3>
                     </div>
                     <div class="card-body">
                         <form method="GET" action="appointments.php" class="form-inline flex-wrap" style="gap:8px;">
@@ -163,10 +162,23 @@ $appointments = $stmt->fetchAll();
                                    placeholder="Ref no / Name"
                                    value="<?= htmlspecialchars($_GET['search'] ?? '') ?>">
 
-                            <select name="office" class="form-control">
-                                <option value="">All Offices</option>
-                                <option value="Cabanatuan City" <?= ($_GET['office'] ?? '') === 'Cabanatuan City' ? 'selected' : '' ?>>Cabanatuan City</option>
-                                <option value="Palayan City" <?= ($_GET['office'] ?? '') === 'Palayan City' ? 'selected' : '' ?>>Palayan City</option>
+                            <select name="branch_id" class="form-control">
+                                <option value="">All Branches</option>
+                                <?php
+                                $city = '';
+                                foreach ($branches as $b):
+                                    if ($city !== $b['city']):
+                                        if ($city) echo '</optgroup>';
+                                        $city = $b['city'];
+                                        echo '<optgroup label="' . htmlspecialchars($city) . '">';
+                                    endif;
+                                ?>
+                                    <option value="<?= $b['id'] ?>"
+                                        <?= (isset($_GET['branch_id']) && (int)$_GET['branch_id'] === $b['id']) ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($b['name']) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                                <?php if ($city) echo '</optgroup>'; ?>
                             </select>
 
                             <select name="status" class="form-control">
@@ -204,7 +216,7 @@ $appointments = $stmt->fetchAll();
                                     <th>Reference No</th>
                                     <th>Applicant</th>
                                     <th>Document</th>
-                                    <th>Office</th>
+                                    <th>Branch</th>
                                     <th>Date</th>
                                     <th>Time</th>
                                     <th>Type</th>
@@ -219,12 +231,15 @@ $appointments = $stmt->fetchAll();
                                     $s = $row['status'];
                                 ?>
                                 <tr>
-                                    <td><code><?= $row['reference_no'] ?></code></td>
+                                    <td><code><?= htmlspecialchars($row['reference_no']) ?></code></td>
                                     <td><?= htmlspecialchars($row['applicant_name']) ?></td>
                                     <td><?= htmlspecialchars($row['document_name']) ?></td>
-                                    <td><?= htmlspecialchars($row['office']) ?></td>
+                                    <td>
+                                        <?= htmlspecialchars($row['branch_name']) ?>
+                                        <small class="text-muted d-block"><?= htmlspecialchars($row['city']) ?></small>
+                                    </td>
                                     <td><?= date('M d, Y', strtotime($row['appointment_date'])) ?></td>
-                                    <td><?= $row['slot_time'] ?></td>
+                                    <td><?= htmlspecialchars($row['slot_time']) ?></td>
                                     <td><?= ucfirst($row['request_type']) ?></td>
                                     <td>
                                         <span class="badge badge-<?= $badge[$s] ?>"><?= ucfirst($s) ?></span>
@@ -239,9 +254,9 @@ $appointments = $stmt->fetchAll();
                                             <input type="hidden" name="update_status" value="1">
                                             <select name="status" class="form-control form-control-sm d-inline w-auto"
                                                     onchange="this.form.submit()">
-                                                <option value="pending"   <?= $s==='pending'   ?'selected':'' ?>>Pending</option>
-                                                <option value="confirmed" <?= $s==='confirmed' ?'selected':'' ?>>Confirmed</option>
-                                                <option value="cancelled" <?= $s==='cancelled' ?'selected':'' ?>>Cancelled</option>
+                                                <option value="pending"   <?= $s==='pending'   ? 'selected' : '' ?>>Pending</option>
+                                                <option value="confirmed" <?= $s==='confirmed' ? 'selected' : '' ?>>Confirmed</option>
+                                                <option value="cancelled" <?= $s==='cancelled' ? 'selected' : '' ?>>Cancelled</option>
                                             </select>
                                         </form>
                                         <a href="appointments.php?delete=<?= $row['id'] ?>"
@@ -253,7 +268,9 @@ $appointments = $stmt->fetchAll();
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php if (empty($appointments)): ?>
-                                <tr><td colspan="9" class="text-center text-muted py-3">No appointments found.</td></tr>
+                                <tr>
+                                    <td colspan="9" class="text-center text-muted py-3">No appointments found.</td>
+                                </tr>
                                 <?php endif; ?>
                             </tbody>
                         </table>

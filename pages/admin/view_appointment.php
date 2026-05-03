@@ -3,14 +3,18 @@ require_once '../../includes/auth.php';
 require_once '../../includes/db.php';
 requireAdmin();
 
-$id = intval($_GET['id']);
+$id   = (int)$_GET['id'];
 $stmt = $pdo->prepare("
-    SELECT a.*, u.full_name as applicant_name, u.email as applicant_email,
-           d.name as document_name, t.slot_time
+    SELECT a.*, u.full_name AS applicant_name, u.email AS applicant_email,
+           d.name AS document_name, d.agency,
+           t.slot_time,
+           b.name AS branch_name, b.address AS branch_address,
+           b.contact AS branch_contact, b.city
     FROM appointments a
-    JOIN users u ON a.user_id = u.id
-    JOIN documents d ON a.document_id = d.id
-    JOIN time_slots t ON a.slot_id = t.id
+    JOIN users u      ON a.user_id     = u.id
+    JOIN documents d  ON a.document_id = d.id
+    JOIN time_slots t ON a.slot_id     = t.id
+    JOIN branches b   ON a.branch_id   = b.id
     WHERE a.id = ?
 ");
 $stmt->execute([$id]);
@@ -20,6 +24,9 @@ if (!$appt) {
     header('Location: appointments.php');
     exit();
 }
+
+$badge = ['pending'=>'warning','confirmed'=>'success','cancelled'=>'danger'];
+$s = $appt['status'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -57,27 +64,34 @@ if (!$appt) {
                 <ul class="nav nav-pills nav-sidebar flex-column" data-widget="treeview">
                     <li class="nav-item">
                         <a href="dashboard.php" class="nav-link">
-                            <i class="nav-icon fas fa-tachometer-alt"></i>
-                            <p>Dashboard</p>
+                            <i class="nav-icon fas fa-tachometer-alt"></i><p>Dashboard</p>
                         </a>
                     </li>
                     <li class="nav-item">
                         <a href="appointments.php" class="nav-link active">
-                            <i class="nav-icon fas fa-calendar-alt"></i>
-                            <p>Appointments</p>
+                            <i class="nav-icon fas fa-calendar-alt"></i><p>Appointments</p>
                         </a>
                     </li>
                     <li class="nav-item">
                         <a href="users.php" class="nav-link">
-                            <i class="nav-icon fas fa-users"></i>
-                            <p>Users</p>
+                            <i class="nav-icon fas fa-users"></i><p>Users</p>
                         </a>
                     </li>
                     <li class="nav-item">
-    <a href="account.php" class="nav-link">
-        <i class="nav-icon fas fa-user-cog"></i><p>Account</p>
-    </a>
-</li>
+                        <a href="slots.php" class="nav-link">
+                            <i class="nav-icon fas fa-clock"></i><p>Slot Management</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="documents.php" class="nav-link">
+                            <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="account.php" class="nav-link">
+                            <i class="nav-icon fas fa-user-cog"></i><p>Account</p>
+                        </a>
+                    </li>
                 </ul>
             </nav>
         </div>
@@ -92,82 +106,95 @@ if (!$appt) {
         <div class="content">
             <div class="container-fluid">
                 <div class="row">
-                    <div class="col-md-8">
+                    <div class="col-md-9">
                         <div class="card">
                             <div class="card-header">
                                 <h3 class="card-title">Appointment Details</h3>
+                                <div class="card-tools">
+                                    <span class="badge badge-<?= $badge[$s] ?> badge-lg" style="font-size:13px;">
+                                        <?= ucfirst($s) ?>
+                                    </span>
+                                </div>
                             </div>
                             <div class="card-body">
 
                                 <div class="text-center mb-3">
-                                    <h4>Reference: <span class="text-primary"><?= $appt['reference_no'] ?></span></h4>
+                                    <h4>Reference: <span class="text-primary"><?= htmlspecialchars($appt['reference_no']) ?></span></h4>
                                 </div>
                                 <hr>
 
                                 <div class="row">
+                                    <!-- Appointment Info -->
                                     <div class="col-md-6">
-                                        <h5>Appointment Info</h5>
-                                        <table class="table table-borderless">
-                                            <tr><th>Document:</th><td><?= $appt['document_name'] ?></td></tr>
+                                        <h5><i class="fas fa-calendar-alt mr-1 text-primary"></i> Appointment Info</h5>
+                                        <table class="table table-borderless table-sm">
+                                            <tr><th width="140">Document:</th><td><?= htmlspecialchars($appt['document_name']) ?></td></tr>
+                                            <tr><th>Agency:</th><td><?= htmlspecialchars($appt['agency']) ?></td></tr>
                                             <tr><th>Date:</th><td><?= date('F d, Y', strtotime($appt['appointment_date'])) ?></td></tr>
-                                            <tr><th>Time:</th><td><?= $appt['slot_time'] ?></td></tr>
+                                            <tr><th>Time:</th><td><?= htmlspecialchars($appt['slot_time']) ?></td></tr>
                                             <tr><th>Request Type:</th><td><?= ucfirst($appt['request_type']) ?></td></tr>
-                                            <tr>
-                                                <th>Status:</th>
-                                                <td>
-                                                    <?php
-                                                    $badge = ['pending'=>'warning','confirmed'=>'success','cancelled'=>'danger'];
-                                                    $s = $appt['status'];
-                                                    ?>
-                                                    <span class="badge badge-<?= $badge[$s] ?>"><?= ucfirst($s) ?></span>
-                                                </td>
-                                            </tr>
+                                            <tr><th>Status:</th><td><span class="badge badge-<?= $badge[$s] ?>"><?= ucfirst($s) ?></span></td></tr>
                                         </table>
                                     </div>
+
+                                    <!-- Branch Info -->
                                     <div class="col-md-6">
-                                        <h5>Applicant Info</h5>
-                                        <table class="table table-borderless">
-                                            <tr><th>Account Name:</th><td><?= $appt['applicant_name'] ?></td></tr>
-                                            <tr><th>Account Email:</th><td><?= $appt['applicant_email'] ?></td></tr>
-                                            <tr><th>Full Name:</th><td><?= $appt['full_name'] ?></td></tr>
+                                        <h5><i class="fas fa-building mr-1 text-primary"></i> Branch / Office</h5>
+                                        <table class="table table-borderless table-sm">
+                                            <tr><th width="100">Branch:</th><td><?= htmlspecialchars($appt['branch_name']) ?></td></tr>
+                                            <tr><th>City:</th><td><?= htmlspecialchars($appt['city']) ?></td></tr>
+                                            <tr><th>Address:</th><td><?= htmlspecialchars($appt['branch_address']) ?></td></tr>
+                                            <?php if ($appt['branch_contact']): ?>
+                                            <tr><th>Contact:</th><td><?= htmlspecialchars($appt['branch_contact']) ?></td></tr>
+                                            <?php endif; ?>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <hr>
+
+                                <!-- Applicant Info -->
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <h5><i class="fas fa-user mr-1 text-primary"></i> Applicant Info</h5>
+                                        <table class="table table-borderless table-sm">
+                                            <tr><th width="140">Account Name:</th><td><?= htmlspecialchars($appt['applicant_name']) ?></td></tr>
+                                            <tr><th>Account Email:</th><td><?= htmlspecialchars($appt['applicant_email']) ?></td></tr>
+                                            <tr><th>Full Name:</th><td><?= htmlspecialchars($appt['full_name']) ?></td></tr>
                                             <tr><th>Age:</th><td><?= $appt['age'] ?></td></tr>
                                             <tr><th>Birthdate:</th><td><?= $appt['birthdate'] ?></td></tr>
-                                            <tr><th>Gender:</th><td><?= $appt['gender'] ?></td></tr>
-                                            <tr><th>Civil Status:</th><td><?= $appt['civil_status'] ?></td></tr>
-                                            <tr><th>Address:</th><td><?= $appt['address'] ?></td></tr>
-                                            <tr><th>Email:</th><td><?= $appt['email'] ?></td></tr>
-                                            <tr><th>Contact:</th><td><?= $appt['contact'] ?></td></tr>
+                                            <tr><th>Gender:</th><td><?= htmlspecialchars($appt['gender']) ?></td></tr>
+                                            <tr><th>Civil Status:</th><td><?= htmlspecialchars($appt['civil_status']) ?></td></tr>
+                                            <tr><th>Address:</th><td><?= htmlspecialchars($appt['address']) ?></td></tr>
+                                            <tr><th>Email:</th><td><?= htmlspecialchars($appt['email']) ?></td></tr>
+                                            <tr><th>Contact:</th><td><?= htmlspecialchars($appt['contact']) ?></td></tr>
                                         </table>
                                     </div>
-                                </div>
 
-                                <?php if ($appt['request_type'] === 'other'): ?>
-                                <hr>
-                                <div class="row">
+                                    <?php if ($appt['request_type'] === 'other'): ?>
                                     <div class="col-md-6">
-                                        <h5>Requested For</h5>
-                                        <table class="table table-borderless">
-                                            <tr><th>Name:</th><td><?= $appt['for_name'] ?></td></tr>
-                                            <tr><th>Relationship:</th><td><?= $appt['for_relationship'] ?></td></tr>
-                                            <tr><th>Minor:</th><td><?= $appt['is_minor'] ? 'Yes' : 'No' ?></td></tr>
+                                        <h5><i class="fas fa-user-friends mr-1 text-warning"></i> Requested For</h5>
+                                        <table class="table table-borderless table-sm">
+                                            <tr><th width="120">Name:</th><td><?= htmlspecialchars($appt['for_name']) ?></td></tr>
+                                            <tr><th>Relationship:</th><td><?= htmlspecialchars($appt['for_relationship']) ?></td></tr>
+                                            <tr><th>Minor:</th><td><?= $appt['is_minor'] ? '<span class="badge badge-warning">Yes</span>' : 'No' ?></td></tr>
                                         </table>
-                                    </div>
-                                    <?php if ($appt['is_minor']): ?>
-                                    <div class="col-md-6">
-                                        <h5>Guardian Info</h5>
-                                        <table class="table table-borderless">
-                                            <tr><th>Name:</th><td><?= $appt['guardian_name'] ?></td></tr>
-                                            <tr><th>Contact:</th><td><?= $appt['guardian_contact'] ?></td></tr>
+
+                                        <?php if ($appt['is_minor']): ?>
+                                        <h5 class="mt-3"><i class="fas fa-shield-alt mr-1 text-danger"></i> Guardian Info</h5>
+                                        <table class="table table-borderless table-sm">
+                                            <tr><th width="120">Name:</th><td><?= htmlspecialchars($appt['guardian_name']) ?></td></tr>
+                                            <tr><th>Contact:</th><td><?= htmlspecialchars($appt['guardian_contact']) ?></td></tr>
                                         </table>
+                                        <?php endif; ?>
                                     </div>
                                     <?php endif; ?>
                                 </div>
-                                <?php endif; ?>
 
                             </div>
                             <div class="card-footer">
                                 <a href="appointments.php" class="btn btn-default">
-                                    <i class="fas fa-arrow-left"></i> Back
+                                    <i class="fas fa-arrow-left"></i> Back to Appointments
                                 </a>
                             </div>
                         </div>

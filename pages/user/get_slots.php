@@ -1,38 +1,39 @@
 <?php
-require_once '../../includes/auth.php';
 require_once '../../includes/db.php';
-requireApplicant();
 
-$date = $_GET['date'] ?? '';
-$office = $_GET['office'] ?? '';
+header('Content-Type: application/json');
 
-if (!$date || !$office) {
+$branch_id = isset($_GET['branch_id']) ? (int)$_GET['branch_id'] : 0;
+$date      = $_GET['date'] ?? '';
+
+if (!$branch_id || !$date) {
     echo json_encode([]);
     exit();
 }
 
-// Block weekends
 $day = date('N', strtotime($date));
 if ($day >= 6) {
     echo json_encode(['weekend' => true]);
     exit();
 }
 
-// Get slots for this office with booking count
 $stmt = $pdo->prepare("
-    SELECT t.id, t.slot_time, t.max_capacity,
-           COUNT(a.id) as booked
-    FROM time_slots t
+    SELECT 
+        ts.id,
+        ts.slot_time,
+        ts.max_capacity,
+        COUNT(a.id) AS booked
+    FROM time_slots ts
     LEFT JOIN appointments a 
-        ON a.slot_id = t.id 
-        AND a.appointment_date = ? 
-        AND a.office = ?
+        ON a.slot_id = ts.id 
+        AND a.appointment_date = ?
+        AND a.branch_id = ?
         AND a.status != 'cancelled'
-    WHERE t.office = ?
-    GROUP BY t.id
-    ORDER BY t.id
+    WHERE ts.branch_id = ?
+    GROUP BY ts.id, ts.slot_time, ts.max_capacity
+    ORDER BY ts.slot_time
 ");
-$stmt->execute([$date, $office, $office]);
+$stmt->execute([$date, $branch_id, $branch_id]);
 $slots = $stmt->fetchAll();
 
 $result = [];
@@ -41,13 +42,9 @@ foreach ($slots as $slot) {
     $result[] = [
         'id'        => $slot['id'],
         'slot_time' => $slot['slot_time'],
-        'booked'    => (int)$slot['booked'],
-        'capacity'  => $slot['max_capacity'],
-        'remaining' => $remaining,
+        'remaining' => max(0, $remaining),
         'full'      => $remaining <= 0
     ];
 }
 
-header('Content-Type: application/json');
 echo json_encode($result);
-?>

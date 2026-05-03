@@ -3,30 +3,32 @@ require_once '../../includes/auth.php';
 require_once '../../includes/db.php';
 requireApplicant();
 
-// Fetch logged-in user data
 $user = $pdo->prepare("SELECT * FROM users WHERE id = ?");
 $user->execute([$_SESSION['user_id']]);
 $user = $user->fetch();
 
-$documents = $pdo->query("SELECT * FROM documents")->fetchAll();
-$offices = ['Cabanatuan City', 'Palayan City'];
+$docs = $pdo->query("SELECT id, name, agency FROM documents ORDER BY agency, name")->fetchAll();
+$grouped = [];
+foreach ($docs as $doc) {
+    $grouped[$doc['agency']][] = $doc;
+}
 
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $document_id      = $_POST['document_id'];
-    $appointment_date = $_POST['appointment_date'];
-    $slot_id          = $_POST['slot_id'];
-    $office           = $_POST['office'];
-    $request_type     = $_POST['request_type'];
-    $full_name        = trim($_POST['full_name']);
-    $age              = intval($_POST['age']);
-    $birthdate        = $_POST['birthdate'];
-    $address          = trim($_POST['address']);
-    $email            = trim($_POST['email']);
-    $contact          = trim($_POST['contact']);
-    $civil_status     = $_POST['civil_status'];
-    $gender           = $_POST['gender'];
+    $document_id  = (int)$_POST['document_id'];
+    $branch_id    = (int)$_POST['branch_id'];
+    $slot_id      = (int)$_POST['slot_id'];
+    $appt_date    = $_POST['appointment_date'];
+    $request_type = $_POST['request_type'];
+    $full_name    = trim($_POST['full_name']);
+    $age          = (int)$_POST['age'];
+    $birthdate    = $_POST['birthdate'];
+    $address      = trim($_POST['address']);
+    $email        = trim($_POST['email']);
+    $contact      = trim($_POST['contact']);
+    $civil_status = $_POST['civil_status'];
+    $gender       = $_POST['gender'];
 
     $for_name = $for_relationship = $guardian_name = $guardian_contact = null;
     $is_minor = 0;
@@ -34,7 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($request_type === 'other') {
         $for_name         = trim($_POST['for_name']);
         $for_relationship = trim($_POST['for_relationship']);
-        $for_age          = intval($_POST['for_age']);
+        $for_age          = (int)($_POST['for_age'] ?? 0);
         if ($for_age < 18) {
             $is_minor         = 1;
             $guardian_name    = trim($_POST['guardian_name']);
@@ -42,44 +44,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // Validate future date
-    if (strtotime($appointment_date) <= strtotime('today')) {
+    // Block minor booking for myself
+    if ($request_type === 'self' && $age < 18) {
+        $error = 'Applicants below 18 cannot book for themselves. Please select "For Another Person" and provide guardian details.';
+    }
+
+    if (!$error && strtotime($appt_date) <= strtotime('today')) {
         $error = 'Please select a future date.';
     }
 
-    // Validate no weekends
-    $day_of_week = date('N', strtotime($appointment_date));
-    if (!$error && $day_of_week >= 6) {
-        $error = 'Offices are closed on weekends. Please select a weekday.';
+    if (!$error) {
+        $day = date('N', strtotime($appt_date));
+        if ($day >= 6) $error = 'Offices are closed on weekends. Please select a weekday.';
     }
 
-    // Validate slot belongs to selected office
     if (!$error) {
-        $slot_check = $pdo->prepare("SELECT id FROM time_slots WHERE id = ? AND office = ?");
-        $slot_check->execute([$slot_id, $office]);
-        if (!$slot_check->fetch()) {
-            $error = 'Invalid slot selected.';
-        }
-    }
-
-    // Check slot capacity
-    if (!$error) {
-        $count_stmt = $pdo->prepare("
-            SELECT COUNT(*) FROM appointments
-            WHERE slot_id = ? AND appointment_date = ? AND office = ? AND status != 'cancelled'
+        $cap = $pdo->prepare("
+            SELECT ts.max_capacity, COUNT(a.id) AS booked
+            FROM time_slots ts
+            LEFT JOIN appointments a 
+                ON a.slot_id = ts.id 
+                AND a.appointment_date = ?
+                AND a.branch_id = ?
+                AND a.status != 'cancelled'
+            WHERE ts.id = ? AND ts.branch_id = ?
+            GROUP BY ts.max_capacity
         ");
-        $count_stmt->execute([$slot_id, $appointment_date, $office]);
-        if ($count_stmt->fetchColumn() >= 20) {
+        $cap->execute([$appt_date, $branch_id, $slot_id, $branch_id]);
+        $capRow = $cap->fetch();
+        if (!$capRow || ($capRow['max_capacity'] - $capRow['booked']) <= 0) {
             $error = 'This time slot is already full. Please choose another.';
         }
     }
 
-    // Check if user already has a pending/confirmed appointment
     if (!$error) {
-        $existing = $pdo->prepare("
-            SELECT id FROM appointments
-            WHERE user_id = ? AND status IN ('pending', 'confirmed')
-        ");
+        $existing = $pdo->prepare("SELECT id FROM appointments WHERE user_id = ? AND status IN ('pending','confirmed')");
         $existing->execute([$_SESSION['user_id']]);
         if ($existing->fetch()) {
             $error = 'You already have an active appointment. Please cancel it before booking a new one.';
@@ -87,18 +86,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if (!$error) {
-        $reference_no = 'GS-' . strtoupper(uniqid());
-        $stmt = $pdo->prepare("
+        $branchRow = $pdo->prepare("SELECT name FROM branches WHERE id = ?");
+        $branchRow->execute([$branch_id]);
+        $branchName = $branchRow->fetchColumn();
+
+        $reference_no = 'GS-' . strtoupper(substr(md5(uniqid()), 0, 8));
+
+        $pdo->prepare("
             INSERT INTO appointments
-            (user_id, document_id, slot_id, office, appointment_date, request_type,
+            (user_id, document_id, slot_id, branch_id, office, appointment_date, request_type,
              full_name, age, birthdate, address, email, contact, civil_status, gender,
              for_name, for_relationship, is_minor, guardian_name, guardian_contact, reference_no)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ");
-        $stmt->execute([
-            $_SESSION['user_id'], $document_id, $slot_id, $office, $appointment_date,
-            $request_type, $full_name, $age, $birthdate, $address, $email,
-            $contact, $civil_status, $gender, $for_name, $for_relationship,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ")->execute([
+            $_SESSION['user_id'], $document_id, $slot_id, $branch_id, $branchName,
+            $appt_date, $request_type, $full_name, $age, $birthdate, $address,
+            $email, $contact, $civil_status, $gender, $for_name, $for_relationship,
             $is_minor, $guardian_name, $guardian_contact, $reference_no
         ]);
 
@@ -117,7 +120,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <link rel="stylesheet" href="../../assets/plugins/fontawesome-free/css/all.min.css">
     <link rel="stylesheet" href="../../assets/dist/css/adminlte.min.css">
     <style>
-        .slot-badge { font-size: 0.75rem; }
         .field-locked { background-color: #f4f6f9 !important; cursor: not-allowed; }
     </style>
 </head>
@@ -165,10 +167,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </a>
                     </li>
                     <li class="nav-item">
-    <a href="profile.php" class="nav-link">
-        <i class="nav-icon fas fa-user"></i><p>My Profile</p>
-    </a>
-</li>
+                        <a href="profile.php" class="nav-link">
+                            <i class="nav-icon fas fa-user"></i><p>My Profile</p>
+                        </a>
+                    </li>
                 </ul>
             </nav>
         </div>
@@ -202,23 +204,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <div class="card-body">
 
                                 <div class="form-group">
-                                    <label>Office <span class="text-danger">*</span></label>
-                                    <select name="office" id="office" class="form-control" required>
-                                        <option value="">-- Select Office --</option>
-                                        <?php foreach ($offices as $o): ?>
-                                        <option value="<?= $o ?>"><?= $o ?> Office</option>
+                                    <label>Document Needed <span class="text-danger">*</span></label>
+                                    <select name="document_id" id="document_id" class="form-control" required>
+                                        <option value="">-- Select Document --</option>
+                                        <?php foreach ($grouped as $agency => $items): ?>
+                                            <optgroup label="<?= htmlspecialchars($agency) ?>">
+                                                <?php foreach ($items as $d): ?>
+                                                    <option value="<?= $d['id'] ?>">
+                                                        <?= htmlspecialchars($d['name']) ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </optgroup>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
 
                                 <div class="form-group">
-                                    <label>Document Type <span class="text-danger">*</span></label>
-                                    <select name="document_id" class="form-control" required>
-                                        <option value="">-- Select Document --</option>
-                                        <?php foreach ($documents as $doc): ?>
-                                        <option value="<?= $doc['id'] ?>"><?= $doc['name'] ?></option>
-                                        <?php endforeach; ?>
+                                    <label>Branch / Office <span class="text-danger">*</span></label>
+                                    <select name="branch_id" id="branch_id" class="form-control" required>
+                                        <option value="">-- Select document first --</option>
                                     </select>
+                                    <small class="text-muted" id="branch_info"></small>
                                 </div>
 
                                 <div class="form-group">
@@ -231,7 +237,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <div class="form-group">
                                     <label>Time Slot <span class="text-danger">*</span></label>
                                     <select name="slot_id" id="slot_id" class="form-control" required>
-                                        <option value="">-- Select office and date first --</option>
+                                        <option value="">-- Select branch and date first --</option>
                                     </select>
                                     <small class="text-muted">Shows remaining slots out of 20.</small>
                                 </div>
@@ -256,12 +262,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                             <div class="card-body">
 
+                                <!-- Minor warning -->
+                                <div class="alert alert-warning d-none" id="minor_warning">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                    <strong>Notice:</strong> Applicants below 18 <strong>cannot</strong> book for themselves.
+                                    Please select <strong>"For Another Person"</strong> and provide guardian details.
+                                </div>
+
                                 <div class="form-group">
                                     <label>Full Name <span class="text-danger">*</span></label>
                                     <input type="text" name="full_name" id="full_name"
-                                           class="form-control"
-                                           value="<?= htmlspecialchars($user['full_name']) ?>"
-                                           required>
+                                           class="form-control field-locked"
+                                           value="<?= htmlspecialchars($user['full_name']) ?>" readonly required>
                                     <small id="fullname_note" class="text-info">
                                         <i class="fas fa-info-circle"></i> Auto-filled from your account.
                                     </small>
@@ -270,16 +282,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <div class="form-group">
                                     <label>Birthdate <span class="text-danger">*</span></label>
                                     <input type="date" name="birthdate" id="birthdate"
-                                           class="form-control"
-                                           max="<?= date('Y-m-d') ?>" required>
+                                           class="form-control" max="<?= date('Y-m-d') ?>" required>
                                     <small class="text-muted">Age will be calculated automatically.</small>
                                 </div>
 
                                 <div class="form-group">
                                     <label>Age</label>
                                     <input type="number" name="age" id="age"
-                                           class="form-control field-locked"
-                                           placeholder="Auto-calculated" readonly>
+                                           class="form-control field-locked" placeholder="Auto-calculated" readonly>
                                 </div>
 
                                 <div class="form-group">
@@ -290,9 +300,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <div class="form-group">
                                     <label>Email <span class="text-danger">*</span></label>
                                     <input type="email" name="email" id="email"
-                                           class="form-control"
-                                           value="<?= htmlspecialchars($user['email']) ?>"
-                                           required>
+                                           class="form-control field-locked"
+                                           value="<?= htmlspecialchars($user['email']) ?>" readonly required>
                                     <small id="email_note" class="text-info">
                                         <i class="fas fa-info-circle"></i> Auto-filled from your account.
                                     </small>
@@ -345,7 +354,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                            placeholder="e.g. Son, Mother">
                                 </div>
                                 <div class="col-md-4 form-group">
-                                    <label>Age</label>
+                                    <label>Age of Person</label>
                                     <input type="number" name="for_age" id="for_age"
                                            class="form-control" min="0" max="120">
                                 </div>
@@ -374,7 +383,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
 
                     <div class="col-12 mb-4">
-                        <button type="submit" class="btn btn-primary btn-lg">
+                        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
                             <i class="fas fa-calendar-check"></i> Submit Appointment
                         </button>
                         <a href="dashboard.php" class="btn btn-secondary btn-lg ml-2">
@@ -393,92 +402,154 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <strong>GovSched</strong> &copy; <?= date('Y') ?>
     </footer>
 </div>
+
 <script src="../../assets/plugins/jquery/jquery.min.js"></script>
 <script src="../../assets/plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
 <script src="../../assets/dist/js/adminlte.min.js"></script>
 <script>
-// Auto-calculate age from birthdate
-$('#birthdate').on('change', function() {
-    var birthdate = new Date($(this).val());
-    var today = new Date();
-    var age = today.getFullYear() - birthdate.getFullYear();
-    var m = today.getMonth() - birthdate.getMonth();
-    if (m < 0 || (m === 0 && today.getDate() < birthdate.getDate())) age--;
-    $('#age').val(age > 0 ? age : '');
-});
+$(function () {
 
-// Request type toggle — autofill or clear for myself/other
-$('#request_type').on('change', function() {
-    if ($(this).val() === 'other') {
-        $('#other_section').show();
-        $('#guardian_section').hide();
-        // Clear autofill when booking for others
-        $('#full_name').val('').removeClass('field-locked').prop('readonly', false);
-        $('#email').val('').removeClass('field-locked').prop('readonly', false);
-        $('#fullname_note, #email_note').hide();
-    } else {
-        $('#other_section').hide();
-        $('#guardian_section').hide();
-        // Restore autofill for myself
-        $('#full_name').val('<?= addslashes($user['full_name']) ?>').addClass('field-locked').prop('readonly', true);
-        $('#email').val('<?= addslashes($user['email']) ?>').addClass('field-locked').prop('readonly', true);
-        $('#fullname_note, #email_note').show();
-    }
-});
+    // 1. Document → load branches
+    $('#document_id').on('change', function () {
+        var docId = $(this).val();
+        $('#branch_id').html('<option value="">-- Select document first --</option>');
+        $('#branch_info').text('');
+        $('#slot_id').html('<option value="">-- Select branch and date first --</option>');
 
-// Lock autofill fields on load for "myself"
-$(document).ready(function() {
-    $('#full_name, #email').addClass('field-locked').prop('readonly', true);
-});
+        if (!docId) return;
 
-// Load slots
-function loadSlots() {
-    var date   = $('#appointment_date').val();
-    var office = $('#office').val();
-    var $slot  = $('#slot_id');
+        $.getJSON('get_branches.php', { document_id: docId }, function (branches) {
+            if (!branches.length) {
+                $('#branch_id').html('<option value="">No branches available</option>');
+                return;
+            }
 
-    if (!date || !office) {
-        $slot.html('<option value="">-- Select office and date first --</option>');
-        return;
-    }
+            $('#branch_id').html('<option value="">-- Select Branch --</option>');
+            $.each(branches, function (i, b) {
+                $('#branch_id').append(
+                    $('<option>').val(b.id)
+                        .text(b.name + ' — ' + b.city)
+                        .data('address', b.address)
+                        .data('contact', b.contact || '')
+                );
+            });
 
-    $slot.html('<option value="">Loading...</option>');
-
-    $.getJSON('get_slots.php', { date: date, office: office }, function(data) {
-        if (data.weekend) {
-            $slot.html('<option value="">Offices closed on weekends.</option>');
-            return;
-        }
-        $slot.html('<option value="">-- Select Time --</option>');
-        $.each(data, function(i, s) {
-            if (s.full) {
-                $slot.append('<option value="' + s.id + '" disabled style="color:#aaa;">' +
-                    s.slot_time + ' (Full)</option>');
-            } else {
-                $slot.append('<option value="' + s.id + '">' +
-                    s.slot_time + ' — ' + s.remaining + ' slots left</option>');
+            // Auto-select if only 1
+            if (branches.length === 1) {
+                $('#branch_id option:eq(1)').prop('selected', true).trigger('change');
             }
         });
     });
-}
 
-// Block weekends on date picker
-$('#appointment_date').on('change', function() {
-    var d = new Date($(this).val() + 'T00:00:00');
-    if (d.getDay() === 0 || d.getDay() === 6) {
-        alert('Offices are closed on weekends. Please select a weekday.');
-        $(this).val('');
-        $('#slot_id').html('<option value="">-- Select office and date first --</option>');
-        return;
+    // 2. Branch → show address info + reload slots if date already set
+    $('#branch_id').on('change', function () {
+        var selected = $(this).find('option:selected');
+        var addr    = selected.data('address') || '';
+        var contact = selected.data('contact') || '';
+
+        if (addr) {
+            $('#branch_info').html('<i class="fas fa-map-marker-alt mr-1 text-danger"></i>' + addr +
+                (contact ? ' &nbsp;|&nbsp; <i class="fas fa-phone mr-1 text-success"></i>' + contact : ''));
+        } else {
+            $('#branch_info').text('');
+        }
+
+        // Reload slots if date already picked
+        var date = $('#appointment_date').val();
+        if (date && $(this).val()) loadSlots();
+    });
+
+    // 3. Date → validate weekend + load slots
+    $('#appointment_date').on('change', function () {
+        var d = new Date($(this).val() + 'T00:00:00');
+        if (d.getDay() === 0 || d.getDay() === 6) {
+            alert('Offices are closed on weekends. Please select a weekday.');
+            $(this).val('');
+            $('#slot_id').html('<option value="">-- Select branch and date first --</option>');
+            return;
+        }
+        loadSlots();
+    });
+
+    function loadSlots() {
+        var branchId = $('#branch_id').val();
+        var date     = $('#appointment_date').val();
+
+        if (!branchId || !date) {
+            $('#slot_id').html('<option value="">-- Select branch and date first --</option>');
+            return;
+        }
+
+        $('#slot_id').html('<option value="">Loading...</option>');
+
+        $.getJSON('get_slots.php', { branch_id: branchId, date: date }, function (data) {
+            if (!data.length || data.weekend) {
+                $('#slot_id').html('<option value="">No slots available</option>');
+                return;
+            }
+            $('#slot_id').html('<option value="">-- Select Time --</option>');
+            $.each(data, function (i, s) {
+                if (s.full) {
+                    $('#slot_id').append('<option value="' + s.id + '" disabled style="color:#aaa;">' + s.slot_time + ' (Full)</option>');
+                } else {
+                    $('#slot_id').append('<option value="' + s.id + '">' + s.slot_time + ' — ' + s.remaining + ' slots left</option>');
+                }
+            });
+        });
     }
-    loadSlots();
-});
 
-$('#office').on('change', loadSlots);
+    // 4. Request type toggle
+    $('#request_type').on('change', function () {
+        var age = parseInt($('#age').val()) || 0;
+        handleRequestType($(this).val(), age);
+    });
 
-// Minor guardian toggle
-$('#for_age').on('input', function() {
-    $('#guardian_section').toggle(parseInt($(this).val()) < 18 && $(this).val() !== '');
+    // 5. Birthdate → auto-calc age + minor check
+    $('#birthdate').on('change', function () {
+        var bdate = new Date($(this).val());
+        var today = new Date();
+        var age   = today.getFullYear() - bdate.getFullYear();
+        var m     = today.getMonth() - bdate.getMonth();
+        if (m < 0 || (m === 0 && today.getDate() < bdate.getDate())) age--;
+        age = age > 0 ? age : 0;
+        $('#age').val(age);
+        handleRequestType($('#request_type').val(), age);
+    });
+
+    function handleRequestType(type, age) {
+        var isMinor = age > 0 && age < 18;
+
+        if (type === 'self') {
+            $('#other_section, #guardian_section').hide();
+            $('#full_name').val('<?= addslashes($user['full_name']) ?>').addClass('field-locked').prop('readonly', true);
+            $('#email').val('<?= addslashes($user['email']) ?>').addClass('field-locked').prop('readonly', true);
+            $('#fullname_note, #email_note').show();
+
+            if (isMinor) {
+                $('#minor_warning').removeClass('d-none');
+                $('#submitBtn').prop('disabled', true);
+            } else {
+                $('#minor_warning').addClass('d-none');
+                $('#submitBtn').prop('disabled', false);
+            }
+        } else {
+            $('#minor_warning').addClass('d-none');
+            $('#submitBtn').prop('disabled', false);
+            $('#other_section').show();
+            $('#full_name').val('').removeClass('field-locked').prop('readonly', false);
+            $('#email').val('').removeClass('field-locked').prop('readonly', false);
+            $('#fullname_note, #email_note').hide();
+        }
+    }
+
+    // 6. For another person minor check
+    $('#for_age').on('input', function () {
+        var age = parseInt($(this).val());
+        $('#guardian_section').toggle(!isNaN(age) && age < 18);
+    });
+
+    // Init on load
+    $('#full_name, #email').addClass('field-locked').prop('readonly', true);
 });
 </script>
 </body>
