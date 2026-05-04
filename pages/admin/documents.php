@@ -128,6 +128,12 @@ foreach ($documents as $doc) {
                             <i class="nav-icon fas fa-clock"></i><p>Slot Management</p>
                         </a>
                     </li>
+
+                    <li class="nav-item">
+    <a href="branches.php" class="nav-link">
+        <i class="nav-icon fas fa-map-marker-alt"></i><p>Branches</p>
+    </a>
+</li>
                     <li class="nav-item">
                         <a href="documents.php" class="nav-link active">
                             <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>

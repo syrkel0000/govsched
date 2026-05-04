@@ -83,6 +83,12 @@ $users = $pdo->query("
 </li>
 
 <li class="nav-item">
+    <a href="branches.php" class="nav-link">
+        <i class="nav-icon fas fa-map-marker-alt"></i><p>Branches</p>
+    </a>
+</li>
+
+<li class="nav-item">
     <a href="documents.php" class="nav-link">
         <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
     </a>
@@ -130,13 +136,17 @@ $users = $pdo->query("
                                     <td><?= $row['email'] ?></td>
                                     <td><?= $row['total_appointments'] ?></td>
                                     <td><?= date('M d, Y', strtotime($row['created_at'])) ?></td>
-                                    <td>
-                                        <a href="users.php?delete=<?= $row['id'] ?>"
-                                           class="btn btn-danger btn-sm"
-                                           onclick="return confirm('Delete this user and all their appointments?')">
-                                            <i class="fas fa-trash"></i> Delete
-                                        </a>
-                                    </td>
+                                   <td style="white-space:nowrap;">
+    <a href="view_user.php?id=<?= $row['id'] ?>"
+       class="btn btn-info btn-sm">
+        <i class="fas fa-eye"></i> View
+    </a>
+    <a href="users.php?delete=<?= $row['id'] ?>"
+       class="btn btn-danger btn-sm"
+       onclick="return confirm('Delete this user and all their appointments?')">
+        <i class="fas fa-trash"></i> Delete
+    </a>
+</td>
                                 </tr>
                                 <?php endforeach; ?>
                                 <?php if (empty($users)): ?>

@@ -57,25 +57,44 @@ if (isset($_GET['delete'])) {
     }
 }
 
-// Fetch all branches
-$branches = $pdo->query("SELECT * FROM branches ORDER BY city, agency, name")->fetchAll();
-
-// Filter by branch
+// Filters
+$branches      = $pdo->query("SELECT * FROM branches ORDER BY city, agency, name")->fetchAll();
 $filter_branch = isset($_GET['branch_id']) ? (int)$_GET['branch_id'] : 0;
+$filter_date   = isset($_GET['filter_date']) && $_GET['filter_date'] !== '' ? $_GET['filter_date'] : '';
 
-$query = "
+// Build slots query — always get all-time booked
+$where  = $filter_branch ? "WHERE ts.branch_id = $filter_branch" : '';
+$slots  = $pdo->query("
     SELECT ts.*, b.name AS branch_name, b.city, b.agency,
            COUNT(a.id) AS total_booked
     FROM time_slots ts
     JOIN branches b ON b.id = ts.branch_id
     LEFT JOIN appointments a ON a.slot_id = ts.id AND a.status != 'cancelled'
-";
-if ($filter_branch) {
-    $query .= " WHERE ts.branch_id = $filter_branch";
-}
-$query .= " GROUP BY ts.id ORDER BY b.city, b.agency, b.name, ts.slot_time";
+    $where
+    GROUP BY ts.id
+    ORDER BY b.city, b.agency, b.name, ts.slot_time
+")->fetchAll();
 
-$slots = $pdo->query($query)->fetchAll();
+// If date filter active — get per-date booked count per slot
+$date_booked = [];
+if ($filter_date) {
+    $dq_where  = "WHERE a.appointment_date = ? AND a.status != 'cancelled'";
+    $dq_params = [$filter_date];
+    if ($filter_branch) {
+        $dq_where  .= " AND a.branch_id = ?";
+        $dq_params[] = $filter_branch;
+    }
+    $dq = $pdo->prepare("
+        SELECT a.slot_id, COUNT(*) AS booked
+        FROM appointments a
+        $dq_where
+        GROUP BY a.slot_id
+    ");
+    $dq->execute($dq_params);
+    foreach ($dq->fetchAll() as $row) {
+        $date_booked[$row['slot_id']] = $row['booked'];
+    }
+}
 
 // Group by branch_id
 $grouped = [];
@@ -83,10 +102,16 @@ foreach ($slots as $slot) {
     $grouped[$slot['branch_id']][] = $slot;
 }
 
-// Branches to display — all or filtered
 $display_branches = $filter_branch
     ? array_filter($branches, fn($b) => $b['id'] === $filter_branch)
     : $branches;
+
+// Weekend check for filter date
+$is_weekend = false;
+if ($filter_date) {
+    $dow = date('N', strtotime($filter_date));
+    $is_weekend = $dow >= 6;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -142,6 +167,13 @@ $display_branches = $filter_branch
                             <i class="nav-icon fas fa-clock"></i><p>Slot Management</p>
                         </a>
                     </li>
+
+
+                    <li class="nav-item">
+    <a href="branches.php" class="nav-link">
+        <i class="nav-icon fas fa-map-marker-alt"></i><p>Branches</p>
+    </a>
+</li>
                     <li class="nav-item">
                         <a href="documents.php" class="nav-link">
                             <i class="nav-icon fas fa-file-alt"></i><p>Documents</p>
@@ -182,7 +214,12 @@ $display_branches = $filter_branch
                 </div>
                 <?php endif; ?>
 
-
+                <?php if ($is_weekend): ?>
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle mr-1"></i>
+                    <strong><?= date('l, F d, Y', strtotime($filter_date)) ?></strong> is a weekend — offices are closed. No bookings can be made on this date.
+                </div>
+                <?php endif; ?>
 
                 <!-- Add Slot Form -->
                 <div class="card card-primary card-outline">
@@ -235,44 +272,59 @@ $display_branches = $filter_branch
                     </div>
                 </div>
 
-                                <!-- Filter -->
-<div class="card card-outline card-secondary">
-    <div class="card-body py-2">
-        <form method="GET" action="slots.php" class="form-inline" style="gap:10px;">
-            <div class="form-group">
-                <label class="mr-2"><i class="fas fa-filter mr-1"></i>Filter by Branch</label>
-                <select name="branch_id" class="form-control">
-                    <option value="">-- All Branches --</option>
-                    <?php
-                    $city = '';
-                    foreach ($branches as $b):
-                        if ($city !== $b['city']):
-                            if ($city) echo '</optgroup>';
-                            $city = $b['city'];
-                            echo '<optgroup label="' . htmlspecialchars($city) . '">';
-                        endif;
-                    ?>
-                        <option value="<?= $b['id'] ?>" <?= $filter_branch === $b['id'] ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($b['name']) ?>
-                        </option>
-                    <?php endforeach; ?>
-                    <?php if ($city) echo '</optgroup>'; ?>
-                </select>
-            </div>
-            <button type="submit" class="btn btn-primary">
-                <i class="fas fa-search"></i> Filter
-            </button>
-            <?php if ($filter_branch): ?>
-            <a href="slots.php" class="btn btn-secondary">
-                <i class="fas fa-times"></i> Clear
-            </a>
-            <?php endif; ?>
-        </form>
-    </div>
-</div>
+                <!-- Filter -->
+                <div class="card card-outline card-secondary">
+                    <div class="card-body py-2">
+                        <form method="GET" action="slots.php" class="form-inline flex-wrap" style="gap:10px;">
+                            <div class="form-group">
+                                <label class="mr-2"><i class="fas fa-filter mr-1"></i> Branch</label>
+                                <select name="branch_id" class="form-control">
+                                    <option value="">-- All Branches --</option>
+                                    <?php
+                                    $city = '';
+                                    foreach ($branches as $b):
+                                        if ($city !== $b['city']):
+                                            if ($city) echo '</optgroup>';
+                                            $city = $b['city'];
+                                            echo '<optgroup label="' . htmlspecialchars($city) . '">';
+                                        endif;
+                                    ?>
+                                        <option value="<?= $b['id'] ?>" <?= $filter_branch === $b['id'] ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($b['name']) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                    <?php if ($city) echo '</optgroup>'; ?>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="mr-2"><i class="fas fa-calendar mr-1"></i> Date</label>
+                                <input type="date" name="filter_date" class="form-control"
+                                       value="<?= htmlspecialchars($filter_date) ?>">
+                                <small class="text-muted ml-2">Leave blank for all-time totals</small>
+            
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-search"></i> Filter
+                            </button>
+                            <?php if ($filter_branch || $filter_date): ?>
+                            <a href="slots.php" class="btn btn-secondary">
+                                <i class="fas fa-times"></i> Clear
+                            </a>
+                            <?php endif; ?>
+                        </form>
+                    </div>
+                </div>
+
+                <?php if ($filter_date && !$is_weekend): ?>
+                <div class="alert alert-info">
+                    <i class="fas fa-calendar-day mr-1"></i>
+                    Showing slot availability for <strong><?= date('l, F d, Y', strtotime($filter_date)) ?></strong>.
+                    Booked = confirmed + pending on this date. Remaining = available slots left.
+                </div>
+                <?php endif; ?>
 
                 <!-- Slots per Branch -->
-               <?php foreach ($display_branches as $b): ?>
+                <?php foreach ($display_branches as $b): ?>
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">
@@ -291,7 +343,12 @@ $display_branches = $filter_branch
                                     <th>#</th>
                                     <th>Time Slot</th>
                                     <th>Max Capacity</th>
+                                    <?php if ($filter_date && !$is_weekend): ?>
+                                    <th>Booked on <?= date('M d, Y', strtotime($filter_date)) ?></th>
+                                    <th>Remaining</th>
+                                    <?php else: ?>
                                     <th>Total Booked (All Time)</th>
+                                    <?php endif; ?>
                                     <th>Update Capacity</th>
                                     <th>Action</th>
                                 </tr>
@@ -299,28 +356,56 @@ $display_branches = $filter_branch
                             <tbody>
                                 <?php if (empty($grouped[$b['id']])): ?>
                                 <tr>
-                                    <td colspan="6" class="text-center text-muted py-3">No slots for this branch.</td>
+                                    <td colspan="7" class="text-center text-muted py-3">No slots for this branch.</td>
                                 </tr>
                                 <?php else: ?>
                                 <?php foreach ($grouped[$b['id']] as $i => $slot): ?>
+                                <?php
+                                    if ($filter_date && !$is_weekend) {
+                                        $booked    = $date_booked[$slot['id']] ?? 0;
+                                        $remaining = max(0, $slot['max_capacity'] - $booked);
+                                        $pct       = $slot['max_capacity'] > 0 ? min(100, round(($booked / $slot['max_capacity']) * 100)) : 0;
+                                    } else {
+                                        $booked    = $slot['total_booked'];
+                                        $remaining = null;
+                                        $pct       = $slot['max_capacity'] > 0 ? min(100, round(($booked / $slot['max_capacity']) * 100)) : 0;
+                                    }
+                                    $bar = $pct >= 100 ? 'danger' : ($pct >= 60 ? 'warning' : 'success');
+                                ?>
                                 <tr>
                                     <td><?= $i + 1 ?></td>
                                     <td><strong><?= htmlspecialchars($slot['slot_time']) ?></strong></td>
                                     <td><span class="badge badge-info"><?= $slot['max_capacity'] ?> max</span></td>
+
+                                    <?php if ($filter_date && !$is_weekend): ?>
                                     <td>
-                                        <?php
-                                        $pct = $slot['max_capacity'] > 0
-                                            ? min(100, round(($slot['total_booked'] / $slot['max_capacity']) * 100))
-                                            : 0;
-                                        $bar = $pct >= 100 ? 'danger' : ($pct >= 60 ? 'warning' : 'success');
-                                        ?>
                                         <div style="min-width:140px;">
-                                            <?= $slot['total_booked'] ?> booked
+                                            <?= $booked ?> booked
                                             <div class="progress progress-sm mt-1">
                                                 <div class="progress-bar bg-<?= $bar ?>" style="width:<?= $pct ?>%"></div>
                                             </div>
                                         </div>
                                     </td>
+                                    <td>
+                                        <?php if ($remaining === 0): ?>
+                                            <span class="badge badge-danger">Full</span>
+                                        <?php elseif ($remaining <= 5): ?>
+                                            <span class="badge badge-warning"><?= $remaining ?> left</span>
+                                        <?php else: ?>
+                                            <span class="badge badge-success"><?= $remaining ?> left</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <?php else: ?>
+                                    <td>
+                                        <div style="min-width:140px;">
+                                            <?= $booked ?> booked
+                                            <div class="progress progress-sm mt-1">
+                                                <div class="progress-bar bg-<?= $bar ?>" style="width:<?= $pct ?>%"></div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <?php endif; ?>
+
                                     <td>
                                         <form method="POST" action="slots.php" class="form-inline">
                                             <input type="hidden" name="slot_id" value="<?= $slot['id'] ?>">
@@ -334,7 +419,7 @@ $display_branches = $filter_branch
                                         </form>
                                     </td>
                                     <td>
-                                        <a href="slots.php?delete=<?= $slot['id'] ?>"
+                                        <a href="slots.php?branch_id=<?= $filter_branch ?>&filter_date=<?= $filter_date ?>&delete=<?= $slot['id'] ?>"
                                            class="btn btn-danger btn-sm"
                                            onclick="return confirm('Delete this time slot?')">
                                             <i class="fas fa-trash"></i>
