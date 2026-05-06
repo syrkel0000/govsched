@@ -77,13 +77,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if (!$error) {
-        $existing = $pdo->prepare("SELECT id FROM appointments WHERE user_id = ? AND status IN ('pending','confirmed')");
-        $existing->execute([$_SESSION['user_id']]);
-        if ($existing->fetch()) {
-            $error = 'You already have an active appointment. Please cancel it before booking a new one.';
-        }
+  if (!$error) {
+    // Get the agency of the selected document
+    $agencyStmt = $pdo->prepare("SELECT agency FROM documents WHERE id = ?");
+    $agencyStmt->execute([$document_id]);
+    $selectedAgency = $agencyStmt->fetchColumn();
+
+    // Check if user already has an active appointment under the same agency
+    $existing = $pdo->prepare("
+        SELECT a.id FROM appointments a
+        JOIN documents d ON a.document_id = d.id
+        WHERE a.user_id = ?
+          AND a.status IN ('pending','confirmed')
+          AND d.agency = ?
+    ");
+    $existing->execute([$_SESSION['user_id'], $selectedAgency]);
+    if ($existing->fetch()) {
+        $error = 'You already have an active appointment under <strong>' . htmlspecialchars($selectedAgency) . '</strong>. Please cancel it before booking another from the same agency.';
     }
+}
 
     if (!$error) {
         $branchRow = $pdo->prepare("SELECT name FROM branches WHERE id = ?");
